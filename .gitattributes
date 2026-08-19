@@ -1,0 +1,3 @@
+# Apply explicit EOL handling only for scripts.
+*.sh text eol=lf
+*.bat text eol=crlf

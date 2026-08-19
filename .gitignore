@@ -1,0 +1,6 @@
+#files that need nopt be tracked to be added here
+/vivado
+/home/tanish/project-work/Silicon_project/repositories/silicon-front-end-repo/scripts/vivado_setup/build_config.yaml
+.Xil/
+xvlog.pb
+Soc_rtl_v1.1_split_ram/

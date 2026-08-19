@@ -1,0 +1,14 @@
+{
+	"verilog.ctags.path": "/usr/bin/ctags",
+	"files.eol": "\n",
+	"editor.tabSize": 8,
+	"editor.insertSpaces": false,
+	"[verilog]": {
+		"editor.tabSize": 8,
+		"editor.insertSpaces": false
+	},
+	"[systemverilog]": {
+		"editor.tabSize": 8,
+		"editor.insertSpaces": false
+	}
+}
