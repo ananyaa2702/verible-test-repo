@@ -1,0 +1,156 @@
+// server.js
+const express = require('express');
+const bodyParser = require('body-parser');
+const admin = require('firebase-admin');
+const path = require('path');
+const cors = require('cors');
+const vision = require('@google-cloud/vision');
+
+const app = express();
+app.use(bodyParser.json({ limit: '10mb' })); // ESP images can be large
+app.use(cors());
+
+// Firebase Admin SDK setup
+const serviceAccount = require(path.join(__dirname, 'serviceAccountKey.json'));
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+
+// Google Vision Client
+const visionClient = new vision.ImageAnnotatorClient({
+  keyFilename: path.join(__dirname, 'serviceAccountKey.json') // same service account
+});
+
+// ---------------- GET INVENTORY ----------------
+app.get('/api/getInventory', async (req, res) => {
+  try {
+    const snap = await db.collection('inventory').get();
+    const items = snap.docs.map(d => ({ barcode: d.id, ...d.data() }));
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error fetching inventory' });
+  }
+});
+
+// ---------------- UPDATE STOCK ----------------
+app.post('/api/updateStock', async (req, res) => {
+  try {
+    const { barcode, name, location, number = 1, type = 'add' } = req.body;
+
+    if (!barcode) return res.status(400).json({ error: 'Barcode is required' });
+
+    const qtyDelta = Math.max(0, parseInt(number, 10) || 0);
+    if (qtyDelta === 0) return res.status(400).json({ error: 'Number must be > 0' });
+
+    const docRef = db.collection('inventory').doc(barcode);
+    const docSnap = await docRef.get();
+
+    if (docSnap.exists) {
+      const currentQty = docSnap.data().number || 0;
+      let newQty = currentQty;
+      let actionText = '';
+
+      if (type === 'remove') {
+        newQty = Math.max(0, currentQty - qtyDelta);
+        actionText = `Removed ${qtyDelta}`;
+      } else {
+        newQty = currentQty + qtyDelta;
+        actionText = `Added ${qtyDelta}`;
+      }
+
+      await docRef.update({
+        number: newQty,
+        logs: admin.firestore.FieldValue.arrayUnion({
+          timestamp: new Date().toISOString(),
+          action: actionText,
+          quantity: qtyDelta
+        })
+      });
+
+      return res.json({ message: 'Stock updated successfully', newQty });
+    } else {
+      if (!name || !location) {
+        return res.status(400).json({ error: 'New item requires name and location' });
+      }
+
+      await docRef.set({
+        name,
+        location,
+        number: qtyDelta,
+        logs: [{
+          timestamp: new Date().toISOString(),
+          action: 'New Item Added',
+          quantity: qtyDelta
+        }]
+      });
+
+      return res.json({ message: 'New item added successfully' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ---------------- ESP EVENT ----------------
+app.post('/api/espEvent', async (req, res) => {
+  try {
+    const { cellID, camID = 'esp32', timestamp = new Date().toISOString(), image, eventType = 'detected' } = req.body;
+    if (!cellID) return res.status(400).json({ error: 'cellID required' });
+    if (!image) return res.status(400).json({ error: 'image Base64 required' });
+
+    // Decode Base64 to Buffer
+    const imgBuffer = Buffer.from(image, 'base64');
+
+    // Send to Google Vision API for barcode detection
+    const [result] = await visionClient.barcodeDetection({ image: { content: imgBuffer } });
+    const detections = result.barcodeAnnotations || [];
+    const barcodeValue = detections.length ? detections[0].rawValue : null;
+
+    // Save event log (without storing the image)
+    await db.collection('camEvents').add({
+      cellID,
+      camID,
+      timestamp,
+      image: !!image,
+      eventType,
+      detectedBarcode: barcodeValue || null
+    });
+
+    if (!barcodeValue) {
+      return res.json({ message: 'Event saved; no barcode detected' });
+    }
+
+    // Update inventory based on detected barcode
+    const docRef = db.collection('inventory').doc(barcodeValue);
+    const docSnap = await docRef.get();
+
+    if (docSnap.exists) {
+      const currentQty = docSnap.data().number || 0;
+      const newQty = currentQty + 1; // increment logic
+      await docRef.update({
+        number: newQty,
+        logs: admin.firestore.FieldValue.arrayUnion({
+          timestamp,
+          action: `Detected by CAM (${eventType})`,
+          quantity: 1
+        })
+      });
+      return res.json({ message: 'Event saved and inventory updated', barcode: barcodeValue, newQty });
+    } else {
+      return res.json({ message: 'Event saved; barcode not in inventory', detectedBarcode: barcodeValue });
+    }
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ---------------- START SERVER ----------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
